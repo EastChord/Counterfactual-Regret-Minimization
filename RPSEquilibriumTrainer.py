@@ -1,4 +1,5 @@
 import random
+import numpy as np
 
 # 상수 정의
 ROCK = 0
@@ -13,25 +14,27 @@ strategy = [[0.0] * NUM_ACTIONS for _ in range(NUM_PLAYERS)]
 strategy_sum = [[0.0] * NUM_ACTIONS for _ in range(NUM_PLAYERS)]
 
 
+def normalize(array):
+    norm = np.abs(array).sum()
+    return array / norm if norm != 0 else [0] * len(array)
+
+
 def get_strategy(player):
     """
     후회 매칭을 통해 플레이어의 현재 혼합 전략을 얻습니다.
     """
     global regret_sum, strategy, strategy_sum
-    
+
     normalizing_sum = 0
     current_strategy = strategy[player]
     current_regret_sum = regret_sum[player]
 
     for a in range(NUM_ACTIONS):
         current_strategy[a] = max(0, current_regret_sum[a])
-        normalizing_sum += current_strategy[a]
 
+    current_strategy = normalize(current_strategy)
+    
     for a in range(NUM_ACTIONS):
-        if normalizing_sum > 0:
-            current_strategy[a] /= normalizing_sum
-        else:
-            current_strategy[a] = 1.0 / NUM_ACTIONS
         strategy_sum[player][a] += current_strategy[a]
 
     return current_strategy
@@ -57,7 +60,7 @@ def train(iterations):
     플레이어들을 훈련시킵니다.
     """
     global regret_sum
-    
+
     action_utility = [0.0] * NUM_ACTIONS
 
     for _ in range(iterations):
@@ -89,7 +92,7 @@ def get_average_strategy(player):
     모든 훈련 반복에 걸친 플레이어의 평균 혼합 전략을 얻습니다.
     """
     global strategy_sum
-    
+
     avg_strategy = [0.0] * NUM_ACTIONS
     current_strategy_sum = strategy_sum[player]
     normalizing_sum = sum(current_strategy_sum)
