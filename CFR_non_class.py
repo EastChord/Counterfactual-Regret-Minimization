@@ -10,7 +10,8 @@ BET = 1
 NUM_ACTIONS = 2
 
 # iterations
-ITERATIONS = 100000
+ITERATIONS = 500000
+ITERATIONS_THRESHOLD = ITERATIONS / 20
 
 # Global variable to store all information sets
 node_map = {}
@@ -43,7 +44,7 @@ def create_node(info_set):
     }
 
 
-def get_strategy(node, realization_weight):
+def get_strategy(node):
     """
     Get current mixed strategy through regret-matching.
     """
@@ -57,9 +58,6 @@ def get_strategy(node, realization_weight):
     if sum(node["strategy"]) == 0:
         node["strategy"] = np.ones(NUM_ACTIONS) / NUM_ACTIONS
 
-    # accumulate the current strategy with realization weight
-    node["strategy_sum"] += realization_weight * np.array(node["strategy"])
-
     return node["strategy"]
 
 
@@ -68,7 +66,7 @@ def node_to_string(node):
     Convert node to string representation.
     """
     avg_strat = normalize(node["strategy_sum"])
-    return f"{node['info_set']:>4}: [PASS: {avg_strat[0]:.3f}, BET: {avg_strat[1]:.2f}]"
+    return f"{node['info_set']:>4}: [PASS: {avg_strat[0]:.3f}, BET: {avg_strat[1]:.3f}]"
 
 
 def is_terminal_state(history):
@@ -96,7 +94,7 @@ def get_information(cards, history, player):
     return CARD_NAMES[cards[player]] + "-" + history
 
 
-def cfr(cards, history, p0, p1):
+def cfr(cards, history, p0, p1, iteration):
     """
     Counterfactual Regret Minimization algorithm.
     This is reculsive function.
@@ -123,8 +121,12 @@ def cfr(cards, history, p0, p1):
     node = node_map.get(info_idx)
 
     # for each action, recursively call cfr with additional history and probability
+    strategy = get_strategy(node)
     realization_weight = p0 if curr_player == 0 else p1
-    strategy = get_strategy(node, realization_weight)
+
+    # accumulate the current strategy with realization weight
+    if iteration > ITERATIONS_THRESHOLD:
+        node["strategy_sum"] += realization_weight * np.array(node["strategy"])
 
     util = [0.0] * NUM_ACTIONS
     node_util = 0.0
@@ -136,9 +138,9 @@ def cfr(cards, history, p0, p1):
 
         # compute utility for each action
         if curr_player == 0:
-            util[a] = -cfr(cards, next_history, p0 * strategy[a], p1)
+            util[a] = -cfr(cards, next_history, p0 * strategy[a], p1, iteration)
         else:
-            util[a] = -cfr(cards, next_history, p0, p1 * strategy[a])
+            util[a] = -cfr(cards, next_history, p0, p1 * strategy[a], iteration)
 
         # compute node utility
         node_util += strategy[a] * util[a]
@@ -169,7 +171,7 @@ def train(iterations):
         random.shuffle(cards)
 
         # Get utility by calling cfr function recursively
-        util += cfr(cards, "", 1.0, 1.0)
+        util += cfr(cards, "", 1.0, 1.0, iteration)
 
     print(f"\nAverage game value: {util / iterations}")
 
