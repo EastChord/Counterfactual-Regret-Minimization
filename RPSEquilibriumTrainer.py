@@ -124,27 +124,22 @@ def train(iterations):
         act1, act2 = get_action(strategy1), get_action(strategy2)
 
         # calculate regret of player 1 (utility of player 1 due to player 2's action)
-        regret_sum[PLAYER1] = get_player1_regret(act1, act2)
+        regret_sum[PLAYER1] += get_player1_regret(act1, act2)
 
         # calculate regret of player 2 (utility of player 2 due to player 1's action)
-        regret_sum[PLAYER2] = get_player2_regret(act1, act2)
+        regret_sum[PLAYER2] += get_player2_regret(act1, act2)
 
 
 def get_average_strategy(player):
     """
-    모든 훈련 반복에 걸친 플레이어의 평균 혼합 전략을 얻습니다.
+    Get average strategy of player through regret-matching.
     """
     global strategy_sum
 
-    avg_strategy = [0.0] * NUM_ACTIONS
-    current_strategy_sum = strategy_sum[player]
-    normalizing_sum = sum(current_strategy_sum)
+    avg_strategy = normalize(strategy_sum[player])
 
-    for a in range(NUM_ACTIONS):
-        if normalizing_sum > 0:
-            avg_strategy[a] = current_strategy_sum[a] / normalizing_sum
-        else:
-            avg_strategy[a] = 1.0 / NUM_ACTIONS
+    if avg_strategy.sum() == 0:
+        avg_strategy = np.ones(NUM_ACTIONS) / NUM_ACTIONS
 
     return avg_strategy
 
