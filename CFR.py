@@ -1,163 +1,116 @@
+import numpy as np
 import random
 
-
-class KuhnTrainer:
-    """
-    Trainer for Kuhn Poker game using CFR algorithm.
-    """
-
-    # define actions as constants
-    PASS = 0
-    BET = 1
-    NUM_ACTIONS = 2
-
-    class Node:
-        """
-        Expression for information set of game tree.
-        """
-
-        def __init__(self, info_set):
-            self.info_set = info_set
-            self.regret_sum = [0.0] * KuhnTrainer.NUM_ACTIONS
-            self.strategy = [0.0] * KuhnTrainer.NUM_ACTIONS
-            self.strategy_sum = [0.0] * KuhnTrainer.NUM_ACTIONS
-
-        def get_strategy(self, realization_weight):
-            """
-            Get current mixed strategy through regret-matching.
-            """
-            normalizing_sum = 0
-            # get strategy from regret sum
-            for i in range(KuhnTrainer.NUM_ACTIONS):
-                self.strategy[i] = self.regret_sum[i] if self.regret_sum[i] > 0 else 0
-                normalizing_sum += self.strategy[i]  # for normalizing
-
-            # normalize the strategy and accumulate the strategy
-            for i in range(KuhnTrainer.NUM_ACTIONS):
-                # normalize the strategy
-                if normalizing_sum > 0:
-                    self.strategy[i] /= normalizing_sum
-                else:
-                    self.strategy[i] = 1.0 / KuhnTrainer.NUM_ACTIONS
-
-                # accumulate the current strategy with realization weight
-                self.strategy_sum[i] += realization_weight * self.strategy[i]
-
-            return self.strategy
-
-        def get_average_strategy(self):
-            """
-            Get average strategy across all training iterations by compute mixed strategy with average strategy sum.
-            Return:
-                lis t[float]: Final average strategy (approximate Nash Equilibrium)
-            """
-            avg_strategy = [0.0] * KuhnTrainer.NUM_ACTIONS
-            normalizing_sum = sum(self.strategy_sum)
-
-            # normalize the summation of strategy
-            for i in range(KuhnTrainer.NUM_ACTIONS):
-                if normalizing_sum > 0:
-                    avg_strategy[i] = self.strategy_sum[i] / normalizing_sum
-                else:
-                    avg_strategy[i] = 1.0 / KuhnTrainer.NUM_ACTIONS
-
-            return avg_strategy
-
-        def __str__(self) -> str:
-            avg_strat = self.get_average_strategy()
-            return f"{self.info_set:>4}: [PASS: {avg_strat[0]:.3f}, BET: {avg_strat[1]:.2f}]"
-
-    def __init__(self):
-        self.node_map = {}  # map to store all of information sets
-
-    def train(self, iterations):
-        """
-        Find Nash Equilibrium of Kuhn Poker game using CFR algorithm.
-        Args:
-            iterations (int): Number of training iterations.
-        """
-        cards = [1, 2, 3]
-        util = 0.0
-
-        for _ in range(iterations):
-            # shuffle cards
-            random.shuffle(cards)
-
-            # Get utility by calling cfr function recursively
-            util += self.cfr(cards, "", 1.0, 1.0) 
+# define Kuhn Poker
+PASS = 0
+BET = 1
+ACTIONS = [PASS, BET]
+NUM_ACTIONS = len(ACTIONS)
+node_map = {}
 
 
-        # print average strategy of all of information sets
-        print(f"Average game value: {util / iterations}")
-        sorted_nodes = sorted(self.node_map.items())
-        for _, node in sorted_nodes:
-            print(node)
+class Node:
+    def __init__(self, info_set):
+        self.info_set = info_set
+        self.regret_sum = np.zeros(NUM_ACTIONS)
+        self.strategy = np.zeros(NUM_ACTIONS)
+        self.strategy_sum = np.zeros(NUM_ACTIONS)
 
-    def cfr(self, cards, history, p0, p1):
-        """
-        Counterfactual Regret Minimization algorithm.
-        """
-        plays = len(history)  # how many plays have been made
-        player = plays % 2  # 0 for first player, 1 for second player
-        opponent = 1 - player  # 1 for first player, 0 for second player
+    def normalize(self, array):
+        norm = np.abs(array).sum()
+        return array / norm if norm != 0 else np.zeros(len(array))
 
-        # return payoff for terminal states
-        if plays > 1:
-            # activate pass flag if final action is pass. (pp, bp, pbp)
-            terminal_pass = history[-1] == "p"
-            # activate double-bet flag if final actions are bet and bet. (bb, pbb)
-            double_bet = history[-2:] == "bb"
-            # activate higher flag if player card is higher than opponent card
-            is_player_card_higher = cards[player] > cards[opponent]
+    def get_strategy(self, weight):
+        # compute new strategy
+        new_strategy = np.maximum(0, self.regret_sum)
+        new_strategy = self.normalize(new_strategy)
 
-            if terminal_pass:
-                if history == "pp":
-                    return 1 if is_player_card_higher else -1
-                else:
-                    return 1
-            elif double_bet:
-                return 2 if is_player_card_higher else -2
+        # update strategy
+        if np.all(new_strategy == 0):
+            self.strategy = np.ones(NUM_ACTIONS) / NUM_ACTIONS
+        else:
+            self.strategy = new_strategy
 
-        # e.g. if card is 1 and history is "p" then info set is "1p"
-        info_set = str(cards[player]) + history
+        # update strategy sum to compute average strategy after
+        self.strategy_sum += weight * self.strategy
+        # self.strategy_sum += self.strategy
 
-        # get information set node or creat it if nonexistance
-        node = self.node_map.get(info_set)
-        if node is None:
-            node = self.Node(info_set)
-            self.node_map[info_set] = node
+        # return strategy
+        return self.strategy
 
-        # for each action, recursively call cfr with additional history and probability
-        realization_weight = p0 if player == 0 else p1
-        strategy = node.get_strategy(realization_weight)
+    def get_average_strategy(self):
+        avg_strategy = self.normalize(self.strategy_sum)
+        return avg_strategy
 
-        util = [0.0] * self.NUM_ACTIONS
-        node_util = 0.0
+    def __str__(self):
+        avg_strategy = self.get_average_strategy()
+        return f"{self.info_set:>4}: [PASS: {int(round(avg_strategy[0]*100)):>4}%, BET: {int(round(avg_strategy[1]*100)):>4}%]"
 
-        for a in range(self.NUM_ACTIONS):
-            next_history = history + ("p" if a == self.PASS else "b")
 
-            if player == 0:
-                util[a] = -self.cfr(cards, next_history, p0 * strategy[a], p1)
-            else:
-                util[a] = -self.cfr(cards, next_history, p0, p1 * strategy[a])
+def cfr(cards, history, w0, w1):
+    curr_player = len(history) % 2
+    opponent = 1 - curr_player
 
-            node_util += strategy[a] * util[a]
+    # return payoff for terminal states
+    if history == "pp":
+        return 1 if cards[curr_player] > cards[opponent] else -1
+    if history == "bb" or history == "pbb":
+        return 2 if cards[curr_player] > cards[opponent] else -2
+    if history == "bp" or history == "pbp":
+        return 1
 
-        # for each eaction, compute and accumulate counterfactual regret
-        for a in range(self.NUM_ACTIONS):
-            regret = util[a] - node_util
-            opponent_reach_prob = p1 if player == 0 else p0
-            node.regret_sum[a] += opponent_reach_prob * regret
+    info_set = str(cards[curr_player]) + history
 
-        return node_util
+    # get node if existent, otherwise create node
+    if (node := node_map.get(info_set)) is None:
+        node = Node(info_set)
+        node_map[info_set] = node
+
+    # get weight for current player
+    if curr_player == 0:
+        weight = w0
+    else:
+        weight = w1
+
+    strategy = node.get_strategy(weight)
+    util = np.zeros(NUM_ACTIONS)
+    node_util = 0.0
+
+    # for each action, recursively call cfr with additional history and probability
+    for a in ACTIONS:
+        next_history = history + ("p" if a == PASS else "b")
+
+        if curr_player == 0:
+            util[a] = -cfr(cards, next_history, w0 * strategy[a], w1)
+        else:
+            util[a] = -cfr(cards, next_history, w0, w1 * strategy[a])
+
+        node_util += strategy[a] * util[a]
+
+    # for each action, compute and accumulate counterfactual regret
+    for a in ACTIONS:
+        regret = util[a] - node_util
+        node.regret_sum[a] += (w1 if curr_player == 0 else w0) * regret
+        # node.regret_sum[a] += regret
+
+    return node_util
+
+
+def train(iterations):
+    cards = [1, 2, 3]
+    util = 0.0
+
+    for _ in range(iterations):
+        random.shuffle(cards)
+        util += cfr(cards, "", w0=1.0, w1=1.0)
+
+    return util / iterations
 
 
 if __name__ == "__main__":
-    """
-    Main execution block: create a trainer object and start training.
-    """
-    # Monte Carlo method, the more iterations, the more accurate the result.
-    iterations = 10000
-    trainer = KuhnTrainer()
-    trainer.train(iterations)
+    average_game_value = train(iterations=1000000)
+    print(f"\nAverage game value: {average_game_value}")
+    
+    node_map_sorted = sorted(node_map.items())
+    for _, node in node_map_sorted:
+        print(node.__str__())
