@@ -1,337 +1,277 @@
-import random
 import numpy as np
-from typing import Dict, Tuple
+import pandas as pd
+from sequantial_strategy_manager import SequentialStrategyManagerMap as SMap
+from typing import Dict, Any
 
-
-# * 현재 다음 코드를 참고하여 검토하는 중: https://github.com/jwllee/learn-cfr/blob/master/an-intro-to-cfr/liar_die_fsicfr.py
-# * 검토 결과는 '#* complete to check'으로 메모하였음.
-
-
-class Node:
-    """
-    FSICFR 알고리즘의 정보 집합(Information Set) 노드를 나타냅니다.
-    (cfr.pdf 27페이지, Liar Die player decision node)
-
-    이 클래스는 Java 코드의 내부 Node 클래스에 해당합니다.
-    `regretSum`, `strategy`, `strategySum` 등 게임 상태와
-    전략을 저장하기 위한 필드들을 포함합니다.
-    """
-
-    def __init__(self, num_actions: int):
-        """
-        노드를 초기화합니다.
-        (cfr.pdf 27페이지, Liar Die node constructor)
-
-        Args:
-            num_actions (int): 이 노드에서 가능한 행동의 수.
-        """
-        self.num_actions = num_actions
-
-        # regret_sum: 누적 후회 (Java: regretSum)
-        # (cfr.pdf 10페이지, Equation 4: R_i^T)
-        self.regret_sum = np.zeros(num_actions)
-
-        # strategy: 현재 반복에서의 전략 (확률 분포) (Java: strategy)
-        # (cfr.pdf 11페이지, Equation 5: sigma_i^{T+1})
-        self.strategy = np.zeros(num_actions)
-
-        # strategy_sum: 모든 반복에 걸친 (도달 확률로 가중된) 전략의 누적 합계 (Java: strategySum)
-        # (cfr.pdf 12페이지, Algorithm 1, line 26: s_I[a])
-        self.strategy_sum = np.zeros(num_actions)
-
-        # u: 이 노드의 (예상) 유틸리티(가치) (Java: u)
-        # (cfr.pdf 25페이지, Algorithm 2, line 28, 31: n.v)
-        self.u = 0.0
-
-        # my_reach: 현재 *이 노드에서 행동하는* 플레이어가 이 노드에 도달할 확률의 합 (Java: pPlayer)
-        # (cfr.pdf 25페이지, Algorithm 2, line 16, 17: n.pSum_i)
-        self.my_reach = 0.0
-
-        # opp_reach: *상대방* 플레이어가 이 노드에 도달할 확률의 합 (Java: pOpponent)
-        # (cfr.pdf 25페이지, Algorithm 2, line 34: cfp)
-        self.opp_reach = 0.0
-
-    def get_strategy(self) -> np.ndarray:
-        """
-        후회 매칭(Regret Matching)을 기반으로 현재 전략을 계산하고,
-        전략 합계(strategy_sum)를 업데이트합니다.
-        (cfr.pdf 27페이지, Get Liar Die node current mixed strategy...)
-        (cfr.pdf 11페이지, Equation 5)
-        """
-        # 1. 음수가 아닌 후회(positive regrets)만 사용합니다. (R_i^{T,+})
-        self.strategy = np.maximum(0, self.regret_sum)
-        normalizing_sum = np.sum(self.strategy)
-
-        if normalizing_sum > 0:
-            # 2. 확률 분포로 정규화 (Equation 5, 분모)
-            self.strategy /= normalizing_sum
-        else:
-            # 3. 긍정적인 후회가 없으면 균등 분포 사용 (Equation 5, otherwise)
-            self.strategy = np.full(self.num_actions, 1.0 / self.num_actions)
-
-        # 4. 현재 플레이어의 도달 확률(my_reach)로 가중치를 주어 전략 합계 업데이트
-        # (cfr.pdf 25페이지, Algorithm 2, line 12)
-        # (cfr.pdf 27페이지, line 874)
-        # strategy_sum은 최종 평균 전략을 계산하기 위해 누적됩니다.
-        self.strategy_sum += self.my_reach * self.strategy
-        return self.strategy
-
-    def get_average_strategy(self) -> np.ndarray:
-        """
-        모든 훈련 반복에 걸친 평균 전략을 반환합니다.
-        (cfr.pdf 28페이지, Get Liar Die node average mixed strategy)
-        (cfr.pdf 7페이지, Get average mixed strategy...)
-
-        이것이 CFR/FSICFR의 최종 결과물(내쉬 균형 근사치)입니다.
-        """
-        avg_strategy = np.copy(self.strategy_sum)
-        normalizing_sum = np.sum(avg_strategy)
-
-        if normalizing_sum > 0:
-            # 전체 합계로 정규화하여 평균 확률을 구합니다.
-            avg_strategy /= normalizing_sum
-        else:
-            # 전략이 누적되지 않았다면 균등 분포 반환
-            avg_strategy = np.full(self.num_actions, 1.0 / self.num_actions)
-
-        return avg_strategy
-
+# Fixed seed for reproducibility
+np.random.seed(1)
+# Default number of training iterations
+ITERATION = 100000
 
 class LiarDieTrainer:
+    """Trainer for Liar's Dice game using Counterfactual Regret Minimization (CFR).
+    
+    Implements the CFR algorithm to find Nash equilibrium strategies for a simplified
+    version of Liar's Dice where each player has one die.
+    
+    Attributes:
+        sides (int): Number of sides on the dice
+        response_map (SMap): Strategy manager for response decisions (doubt/accept)
+        claim_map (SMap): Strategy manager for claim decisions
+        DOUBT (int): Action constant for doubting opponent's claim
+        ACCEPT (int): Action constant for accepting opponent's claim
     """
-    Liar Die 게임을 위한 FSICFR 훈련기 클래스입니다.
-    (cfr.pdf 33페이지, Liar Die Trainer.java)
-
-    Java의 LiarDieTrainer 클래스에 해당합니다.
-    """
-
-    # 행동 상수 정의 (pdf 26페이지, line 827)
+    
+    # Constants
     DOUBT = 0
     ACCEPT = 1
-
-    def __init__(self, sides: int):
+    PROGRESS_REPORT_INTERVAL = 10000
+    MAX_SIDES_LIMIT = 20
+    
+    def __init__(self, sides: int) -> None:
+        """Initialize the trainer with game tree nodes for all possible game states.
+        
+        Args:
+            sides (int): Number of sides on the dice (typically 6)
+            
+        Raises:
+            ValueError: If sides is not positive or exceeds reasonable limit
         """
-        트레이너를 생성하고 플레이어 결정 노드(정보 집합)를 할당합니다.
-        (cfr.pdf 28페이지, Construct trainer and allocate...)
-        (cfr.pdf 26페이지, Liar Die definitions)
-        """
-        # 주사위 면 수
+        if sides <= 0:
+            raise ValueError("Number of sides must be positive")
+        if sides > self.MAX_SIDES_LIMIT:
+            raise ValueError(f"Number of sides too large (max: {self.MAX_SIDES_LIMIT})")
+            
         self.sides = sides
+        self.response_map = SMap()
+        self.claim_map = SMap()
 
-        # 내 주장(0(주장 없음) ~ 6)에 반응한 상대방의 현재 주장(0 ~ 6)을 듣고, 의심 또는 수락을 결정하는 노드
-        self.response_nodes = np.empty((sides + 1, sides + 1), dtype=object)
-
-        # 상대방의 주장(1 ~ 6)과 주사위를 굴려 나온 결과(1 ~ 6)를 보고, 주장을 결정하는 노드
-        self.claim_nodes = np.empty((sides, sides + 1), dtype=object)
-
-        # 응답 노드 초기화
+        # Create response nodes for all possible claim pairs
+        # Response actions depend on claim level: accept only for 0, doubt only for max, both otherwise
         for my_claim in range(sides + 1):
-            for opp_claim in range(my_claim + 1, sides + 1):
-                # 상대방이 주장하지 않았거나 최댓값을 주장했다면, 수락만 가능
-                num_actions = 1 if (opp_claim == 0 or opp_claim == sides) else 2
-                self.response_nodes[my_claim, opp_claim] = Node(num_actions)
+            for opponent_claim in range(my_claim + 1, sides + 1):
+                info = [my_claim, opponent_claim]
+                actions = ([self.ACCEPT] if opponent_claim == 0 else
+                          [self.DOUBT] if opponent_claim == sides else [self.DOUBT, self.ACCEPT])
+                self.response_map.create_node(info, actions)
 
-        # 주장 노드 초기화
-        for opp_claim in range(sides):
+        # Create claim nodes for all possible claim-roll combinations
+        # Claim actions are only higher values than current claim (can't claim same or lower)
+        for opponent_claim in range(sides):
             for roll in range(1, sides + 1):
-                # 내 주장은 상대방의 주장보다 높아야 한다
-                num_actions = sides - opp_claim
-                self.claim_nodes[opp_claim, roll] = Node(num_actions)
+                info = [opponent_claim, roll]
+                actions = list(range(opponent_claim + 1, sides + 1))
+                self.claim_map.create_node(info, actions)
 
-    def initialize(self):
-        """
-        주사위를 미리 굴리고, 시작 노드의 도달 확률을 1로 설정합니다.
+    def initialize(self) -> np.ndarray:
+        """Initialize a single training iteration with random dice rolls.
+        
+        Returns:
+            np.ndarray: Array of fixed dice rolls for this iteration, one per claim level
         """
         fixed_roll = np.random.randint(1, self.sides + 1, size=self.sides)
-
-        # 시작 노드: 상대가 주장하지 않았고, 처음으로 주사위를 굴려 나온 결과를 보고 내가 주장을 결정하는 노드
-        self.claim_nodes[0, fixed_roll[0]].my_reach = 1.0
-        self.claim_nodes[0, fixed_roll[0]].opp_reach = 1.0
-
+        claim_info = [0, fixed_roll[0]]
+        init_node = self.claim_map.get_node(claim_info)
+        init_node.initialize_reach_probabilities(1.0, 1.0)
         return fixed_roll
 
-    def fwd_acc_response(self, opp_claim, fixed_roll):
+    def forward_accumulate_response(self, opponent_claim: int, fixed_roll: np.ndarray) -> None:
+        """Propagate reach probabilities through response nodes in forward pass.
+        
+        Args:
+            opponent_claim (int): Current claim level made by opponent
+            fixed_roll (np.ndarray): Fixed dice rolls for this iteration
         """
-        응답 노드의 도달 확률 누적
-        """
-        if opp_claim == 0:
-            return
-
-        for my_claim in range(opp_claim):
-            node = self.response_nodes[my_claim, opp_claim]
+        # No responses possible when there's no prior claim
+        if opponent_claim == 0: return
+        
+        for my_claim in range(opponent_claim):
+            node = self.response_map.get_node([my_claim, opponent_claim])
             action_prob = node.get_strategy()
-
-            if opp_claim >= self.sides:
+            
+            # Skip if claim level exceeds maximum (terminal state)
+            if opponent_claim >= self.sides:
                 continue
 
-            roll = fixed_roll[opp_claim]
-
-            next_node = self.claim_nodes[opp_claim, roll]
-            next_node.my_reach += action_prob[self.ACCEPT] * node.my_reach
-            next_node.opp_reach += node.opp_reach
-
-    # * complete to check
-    def fwd_acc_claim(self, opp_claim, fixed_roll):
+            next_node = self.claim_map.get_node([opponent_claim, fixed_roll[opponent_claim]])
+            node.update_reach_probability(next_node, action_prob, self.ACCEPT)
+    
+    def forward_accumulate_claim(self, opponent_claim: int, fixed_roll: np.ndarray) -> None:
+        """Propagate reach probabilities through claim nodes in forward pass.
+        
+        Args:
+            opponent_claim (int): Current claim level
+            fixed_roll (np.ndarray): Fixed dice rolls for this iteration
         """
-        주장 노드의 도달 확률 누적
-        """
-        if opp_claim >= self.sides:
-            return
+        if opponent_claim >= self.sides: return
 
-        roll = fixed_roll[opp_claim]
-        node = self.claim_nodes[opp_claim, roll]
+        node = self.claim_map.get_node([opponent_claim, fixed_roll[opponent_claim]])
         action_prob = node.get_strategy()
 
-        for my_claim in range(opp_claim + 1, self.sides + 1):
-            next_claim_prob = action_prob[my_claim - opp_claim - 1]
+        for my_claim in range(opponent_claim + 1, self.sides + 1):
+            claim_probability = action_prob[my_claim - opponent_claim - 1]
 
-            if next_claim_prob <= 0.0:
+            # Optimization to skip zero-probability branches
+            if claim_probability <= 0.0:
                 continue
 
-            next_node = self.response_nodes[opp_claim, my_claim]
+            next_node = self.response_map.get_node([opponent_claim, my_claim])
+            # Reach probabilities swap between players due to turn structure
             next_node.my_reach += node.opp_reach
-            next_node.opp_reach += next_claim_prob * node.my_reach
+            next_node.opp_reach += claim_probability * node.my_reach
 
-    def forward_accumulation(self, fixed_roll):
-        """
-        모든 노드의 도달 확률 누적
-        """
-        for opp_claim in range(self.sides + 1):
-            self.fwd_acc_response(opp_claim, fixed_roll)
-            self.fwd_acc_claim(opp_claim, fixed_roll)
-
-    def bwd_prop_claim(self, opp_claim, fixed_roll):
-        """
-        주장 노드의 효용 계산
-        """
-        if opp_claim >= self.sides:
-            return
+    def forward_accumulation(self, fixed_roll: np.ndarray) -> None:
+        """Execute complete forward pass to accumulate reach probabilities.
         
+        Args:
+            fixed_roll (np.ndarray): Fixed dice rolls for this iteration
+        """
+        for opponent_claim in range(self.sides + 1):
+            self.forward_accumulate_response(opponent_claim, fixed_roll)
+            self.forward_accumulate_claim(opponent_claim, fixed_roll)
 
-        roll = fixed_roll[opp_claim]
-        node = self.claim_nodes[opp_claim, roll]
-    
+    def backward_propagate_claim(self, opponent_claim: int, fixed_roll: np.ndarray) -> None:
+        """Compute regrets and utilities for claim nodes in backward pass.
+        
+        Args:
+            opponent_claim (int): Current claim level
+            fixed_roll (np.ndarray): Fixed dice rolls for this iteration
+        """
+        if opponent_claim >= self.sides: return
+
+        node = self.claim_map.get_node([opponent_claim, fixed_roll[opponent_claim]])
+
         regret = np.zeros(node.num_actions)
+        for my_claim in range(opponent_claim + 1, self.sides + 1):
+            claim_index = my_claim - opponent_claim - 1
+            next_node = self.response_map.get_node([opponent_claim, my_claim])
+            # Negated because we're evaluating from opponent's perspective
+            regret[claim_index] = -next_node.util
+
+        node.calculate_utility(regret)
+        node.update_regret_sum(regret)
+        node.reset_reach_probabilities()
+
+    def backward_propagate_response(self, opponent_claim: int, fixed_roll: np.ndarray) -> None:
+        """Compute regrets and utilities for response nodes in backward pass.
         
-        action_prob = node.strategy
-        node.u = 0.0
-
-        for my_claim in range(opp_claim + 1, self.sides + 1):
-            action_index = my_claim - opp_claim - 1
-            next_node = self.response_nodes[opp_claim, my_claim]
-
-            child_util = -next_node.u
-            regret[action_index] = child_util
-            node.u += action_prob[action_index] * child_util
-
-        for a in range(len(action_prob)):
-            regret[a] -= node.u
-            node.regret_sum[a] += node.opp_reach * regret[a]
-
-        node.my_reach = 0.0
-        node.opp_reach = 0.0
-
-    # * complete to check
-    def bwd_prop_response(self, opp_claim, fixed_roll):
+        Args:
+            opponent_claim (int): Current claim level
+            fixed_roll (np.ndarray): Fixed dice rolls for this iteration
         """
-        응답 노드의 효용 계산
-        """
-        if opp_claim == 0:
-            return
-        
-        regret = np.zeros(2)
+        if opponent_claim == 0: return
 
-        for my_claim in range(opp_claim):
-            node = self.response_nodes[my_claim, opp_claim]
-            action_prob = node.strategy
-            node.u = 0.0
+        for my_claim in range(opponent_claim):
+            node = self.response_map.get_node([my_claim, opponent_claim])
 
-            roll = fixed_roll[my_claim]
-            doubt_util = 1.0 if opp_claim > roll else -1.0
-
+            regret = np.zeros(2)
+            # Doubt succeeds when opponent's claim exceeds their actual roll
+            doubt_util = 1.0 if opponent_claim > fixed_roll[my_claim] else -1.0
             regret[self.DOUBT] = doubt_util
-            node.u += action_prob[self.DOUBT] * doubt_util
+            regret[self.ACCEPT] = (self.claim_map.get_node([opponent_claim, fixed_roll[opponent_claim]]).util
+                                   if opponent_claim < self.sides else 0.0)
 
-            if opp_claim < self.sides:
-                roll = fixed_roll[opp_claim]
-                next_node = self.claim_nodes[opp_claim, roll]
-                regret[self.ACCEPT] = next_node.u
-                node.u += action_prob[self.ACCEPT] * next_node.u
+            node.calculate_utility(regret)
+            node.update_regret_sum(regret)
+            node.reset_reach_probabilities()
 
-            for a in range(len(action_prob)):
-                regret[a] -= node.u
-                node.regret_sum[a] += node.opp_reach * regret[a]
-
-            node.my_reach = 0.0
-            node.opp_reach = 0.0
-
-    def backward_propagation(self, fixed_roll):
+    def backward_propagation(self, fixed_roll: np.ndarray) -> None:
+        """Execute complete backward pass to compute regrets and utilities.
+        
+        Processes nodes in reverse order to propagate utilities correctly.
+        
+        Args:
+            fixed_roll (np.ndarray): Fixed dice rolls for this iteration
         """
-        모든 노드의 효용 계산
-        """
-        for opp_claim in range(self.sides, -1, -1):
-            self.bwd_prop_claim(opp_claim, fixed_roll)
-            self.bwd_prop_response(opp_claim, fixed_roll)
+        # Reverse order ensures child utilities are computed first
+        for opponent_claim in range(self.sides, -1, -1):
+            self.backward_propagate_claim(opponent_claim, fixed_roll)
+            self.backward_propagate_response(opponent_claim, fixed_roll)
 
-    def reset_strategy_sum(self, iter, iterations):
+    def reset_strategy_sum(self, iteration: int, iterations: int) -> None:
+        """Reset strategy sums at halfway point to discount early exploration.
+        
+        Args:
+            iteration (int): Current iteration number
+            iterations (int): Total number of training iterations
         """
-        훈련의 절반 시점에 전략 합계 초기화
-        """
-        if iter == iterations // 2:
-            for r_node in self.response_nodes.flat:
-                if r_node is not None:
-                    r_node.strategy_sum.fill(0.0)
-            for c_node in self.claim_nodes.flat:
-                if c_node is not None:
-                    c_node.strategy_sum.fill(0.0)
+        # Reset halfway to focus on converged strategies
+        if iteration == iterations // 2:
+            self.response_map.reset_all_strategy_sums()
+            self.claim_map.reset_all_strategy_sums()
 
-    def print_strategy(self):
+    def print_strategy(self) -> Dict[str, Any]:
+        """Display the computed average strategies for all game states.
+        
+        Returns:
+            dict: Dictionary containing DataFrames for 'initial_claim', 'response', and 'claim' strategies
         """
-        전략 출력
-        """
-        for initial_roll in range(1, self.sides + 1):
-            print(f"Initial claim policy with roll {initial_roll}: ")
-            for prob in self.claim_nodes[0, initial_roll].get_average_strategy():
-                print(f"{prob:.3f}")
+        # Collect response node strategies
+        response_df = self.response_map.get_all_strategies_dataframe("response")
+        
+        # Collect claim node strategies
+        claim_df = self.claim_map.get_all_strategies_dataframe("claim")
+        
+        # Print initial claim policies
+        print("\n=== INITIAL CLAIM POLICIES ===")
+        initial_claim_dfs = [self.claim_map.get_node([0, roll]).get_strategy_dataframe("initial_claim")
+                             for roll in range(1, self.sides + 1)
+                             if self.claim_map.get_node([0, roll])]
+        initial_claim_df = pd.concat(initial_claim_dfs, ignore_index=True) if initial_claim_dfs else pd.DataFrame()
+        
+        if not initial_claim_df.empty:
+            print(initial_claim_df.to_string(index=False))
+        
+        for name, df in [("RESPONSE STRATEGIES", response_df), ("CLAIM STRATEGIES", claim_df)]:
+            if not df.empty:
+                print(f"\n=== {name} ===")
+                print(df.to_string(index=False))
+        
+        return {
+            'initial_claim': initial_claim_df,
+            'response': response_df,
+            'claim': claim_df
+        }
 
-        print("Old Claim\tNew Claim\tAction Probs")
-        for my_claim in range(self.sides + 1):
-            for opp_claim in range(my_claim + 1, self.sides + 1):
-                res = self.response_nodes[my_claim, opp_claim].get_average_strategy()
-                res_rounded = [f"{prob:.3f}" for prob in res]
-                print(f"{my_claim}\t{opp_claim}\t\t{res_rounded}")
-
-        print(f"Old Claim\tRoll\tAction Probs")
-        for opp_claim in range(1, self.sides):
-            for roll in range(1, self.sides + 1):
-                clm = self.claim_nodes[opp_claim, roll].get_average_strategy()
-                clm_rounded = [f"{prob:.3f}" for prob in clm]
-                print(f"{opp_claim}\t{roll}\t{clm_rounded}")
-
-    def train(self, iterations: int):
-        """
-        FSICFR 알고리즘을 사용하여 훈련을 실행합니다.
-        """
-        for iter in range(iterations):
+    def save_strategies_to_csv(self, filename_prefix: str = "liar_die_strategies") -> Dict[str, Any]:
+        """Save computed strategies to CSV files.
+        
+        Args:
+            filename_prefix (str): Prefix for output CSV filenames. Defaults to "liar_die_strategies"
             
-            if iter % 10000 == 0:
-                print(f"Iteration {iter:,} / {iterations:,}")
-            
+        Returns:
+            dict: Dictionary containing DataFrames for 'initial_claim', 'response', and 'claim' strategies
+        """
+        strategies = self.print_strategy()
+        
+        for strategy_type, df in strategies.items():
+            if not df.empty:
+                filename = f"{filename_prefix}_{strategy_type}.csv"
+                df.to_csv(filename, index=False)
+                print(f"\n{strategy_type.upper()} strategies saved to {filename}")
+        
+        return strategies
+
+    def train(self, iterations: int) -> None:
+        """Train the CFR algorithm for specified number of iterations.
+        
+        Each iteration performs forward and backward passes to update regrets and strategies.
+        
+        Args:
+            iterations (int): Number of training iterations to run
+        """
+        for iteration in range(iterations):
+            if iteration % self.PROGRESS_REPORT_INTERVAL == 0:
+                print(f"Iteration {iteration:,} / {iterations:,}")
+
             fixed_roll = self.initialize()
             self.forward_accumulation(fixed_roll)
             self.backward_propagation(fixed_roll)
-            self.reset_strategy_sum(iter, iterations)
+            self.reset_strategy_sum(iteration, iterations)
 
         self.print_strategy()
 
 
 if __name__ == "__main__":
-    """
-    메인 실행 블록.
-    (cfr.pdf 33페이지, Liar Die Trainer main method)
-    """
-    # 6면체 주사위로 트레이너 생성
     trainer = LiarDieTrainer(sides=6)
-
-    # 1,000,000번의 반복으로 훈련 실행
-    trainer.train(iterations=1000000)
+    trainer.train(iterations=ITERATION)
