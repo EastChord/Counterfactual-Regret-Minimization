@@ -59,6 +59,8 @@ class SequentialStrategyManager:
         self.util = 0.0
         self.my_reach = 0.0
         self.opp_reach = 0.0
+        # Additional attributes for Kuhn.py compatibility
+        self.utils = np.zeros(self.num_actions)
 
     def normalize(self, array: np.ndarray) -> np.ndarray:
         """Normalize an array to sum to 1, handling zero-sum cases.
@@ -91,7 +93,7 @@ class SequentialStrategyManager:
         Returns:
             np.ndarray: Current strategy (probability distribution over actions)
         """
-        new_strategy = self.normalize(np.maximum(0, self.regret_sum))
+        new_strategy = self.normalize(self.regret_sum)
         # Use uniform strategy when no regrets are positive (exploration)
         if np.all(new_strategy == 0):
             new_strategy = self.get_uniform_strategy()
@@ -99,6 +101,18 @@ class SequentialStrategyManager:
         # Weight strategy by reach probability for average computation
         self.strategy_sum += self.my_reach * self.strategy
         return self.strategy
+
+    def update_and_get_strategy(self, reach_prob: float) -> np.ndarray:
+        """Update strategy and return it (for Kuhn.py compatibility).
+        
+        Args:
+            reach_prob (float): Reach probability for current player
+            
+        Returns:
+            np.ndarray: Current strategy (probability distribution over actions)
+        """
+        self.my_reach = reach_prob
+        return self.get_strategy()
 
     def get_average_strategy(self) -> np.ndarray:
         """Compute average strategy over all training iterations.
@@ -113,19 +127,38 @@ class SequentialStrategyManager:
         
         return average_strategy / normalizing_sum if normalizing_sum > 0 else self.get_uniform_strategy()
 
-    def update_regret_sum(self, regret: np.ndarray) -> None:
+    def get_average_util(self) -> float:
+        """Get average utility (for Kuhn.py compatibility).
+        
+        Returns:
+            float: Average utility at this node
+        """
+        return self.util
+
+    def update_regret_sum(self, regret_or_opp_reach) -> None:
         """Update accumulated regrets based on counterfactual values.
         
-        Computes regrets as difference between action values and expected node value,
-        weighted by opponent reach probability.
+        Supports two calling patterns:
+        1. update_regret_sum(regret_array) - for liar_die.py compatibility
+        2. update_regret_sum(opp_reach_prob) - for Kuhn.py compatibility
         
         Args:
-            regret (np.ndarray): Counterfactual values for each action
+            regret_or_opp_reach: Either regret array or opponent reach probability
         """
-        for a in range(len(self.strategy)):
-            # Regret = action value - node value
-            regret[a] -= self.util
-            self.regret_sum[a] += self.opp_reach * regret[a]
+        if isinstance(regret_or_opp_reach, (int, float)):
+            # Kuhn.py pattern: update_regret_sum(opp_reach_prob)
+            opp_reach = regret_or_opp_reach
+            for a in range(self.num_actions):
+                # Regret = action value - node value
+                regret_value = self.utils[a] - self.util
+                self.regret_sum[a] += opp_reach * regret_value
+        else:
+            # liar_die.py pattern: update_regret_sum(regret_array)
+            regret = regret_or_opp_reach
+            for a in range(len(self.strategy)):
+                # Regret = action value - node value
+                regret[a] -= self.util
+                self.regret_sum[a] += self.opp_reach * regret[a]
 
     def update_reach_probability(self, next_node: 'SequentialStrategyManager', 
                                 action_prob: np.ndarray, action_index: int, 
@@ -276,6 +309,21 @@ class SequentialStrategyManagerMap:
         key = tuple(info)
         return self.node_map.get(key, None)
 
+    def get_strategy_manager(self, info: str, actions: dict) -> SequentialStrategyManager:
+        """Get or create strategy manager for Kuhn.py compatibility.
+        
+        Args:
+            info (str): Information set identifier (string format for Kuhn.py)
+            actions (dict): Dictionary mapping action indices to action names
+            
+        Returns:
+            SequentialStrategyManager: Strategy manager for this information set
+        """
+        # Convert string info to list format for compatibility
+        info_list = [info]
+        actions_list = list(actions.keys())
+        return self.create_node(info_list, actions_list)
+
     def reset_all_strategy_sums(self) -> None:
         """Reset accumulated strategies for all nodes."""
         for node in self.node_map.values():
@@ -328,3 +376,18 @@ class SequentialStrategyManagerMap:
             print(f"\n=== ALL {node_type.upper()} STRATEGIES ===")
             print(df.to_string(index=False))
         return df
+
+    def print_average_strategy(self) -> None:
+        """Print average strategies for Kuhn.py compatibility.
+        
+        Displays strategies in a format compatible with Kuhn.py's expected output.
+        """
+        print("\n=== AVERAGE STRATEGIES ===")
+        for key, node in self.node_map.items():
+            if node is not None:
+                info_str = str(node.info[0]) if len(node.info) > 0 else str(key)
+                print(f"\nInformation Set: {info_str}")
+                avg_strategy = node.get_average_strategy()
+                for i, prob in enumerate(avg_strategy):
+                    action_name = f"Action {i}"
+                    print(f"  {action_name}: {prob:.3f}")
