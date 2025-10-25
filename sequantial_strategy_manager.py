@@ -264,7 +264,7 @@ class SequentialStrategyManager:
         df = self.get_strategy_dataframe(node_type, additional_info)
         print(f"\n{node_type.upper()} Strategy Summary:")
         print(f"Info: {self.info}")
-        print(df.to_string(index=False))
+        print(df.to_string(index=False, col_space=15))
         return df
 
 
@@ -322,7 +322,12 @@ class SequentialStrategyManagerMap:
         # Convert string info to list format for compatibility
         info_list = [info]
         actions_list = list(actions.keys())
-        return self.create_node(info_list, actions_list)
+        node = self.create_node(info_list, actions_list)
+        
+        # Store the actions dictionary for later use in printing
+        node.actions_dict = actions
+        
+        return node
 
     def reset_all_strategy_sums(self) -> None:
         """Reset accumulated strategies for all nodes."""
@@ -374,20 +379,60 @@ class SequentialStrategyManagerMap:
         df = self.get_all_strategies_dataframe(node_type, additional_info_func)
         if not df.empty:
             print(f"\n=== ALL {node_type.upper()} STRATEGIES ===")
-            print(df.to_string(index=False))
+            print(df.to_string(index=False, col_space=15))
         return df
 
     def print_average_strategy(self) -> None:
-        """Print average strategies for Kuhn.py compatibility.
+        """Print average strategies for Kuhn.py compatibility using Pandas DataFrame.
         
-        Displays strategies in a format compatible with Kuhn.py's expected output.
+        Displays strategies in a clean DataFrame format with Information Set as first column
+        and action probabilities as percentage columns. Action names are dynamically generated
+        from the actions dictionary/tuple format.
         """
-        print("\n=== AVERAGE STRATEGIES ===")
+        if not self.node_map:
+            print("\n=== AVERAGE STRATEGIES ===")
+            print("No strategies available.")
+            return
+            
+        # Prepare data for DataFrame
+        data = []
+        
         for key, node in self.node_map.items():
             if node is not None:
                 info_str = str(node.info[0]) if len(node.info) > 0 else str(key)
-                print(f"\nInformation Set: {info_str}")
                 avg_strategy = node.get_average_strategy()
+                
+                # Create row data
+                row_data = {'Information Set': info_str}
+                
+                # Add action probabilities as percentages
                 for i, prob in enumerate(avg_strategy):
-                    action_name = f"Action {i}"
-                    print(f"  {action_name}: {prob:.3f}")
+                    # Get action name from stored actions dictionary
+                    if hasattr(node, 'actions_dict') and node.actions_dict:
+                        # Use the stored actions dictionary
+                        action_index = node.actions[i] if i < len(node.actions) else i
+                        action_name = node.actions_dict.get(action_index, f"Action_{action_index}")
+                        column_name = f"{action_index}: {action_name}"
+                    elif i < len(node.actions):
+                        # Fallback: use actions list
+                        action_index = node.actions[i]
+                        column_name = f"{action_index}: Action_{action_index}"
+                    else:
+                        # Fallback for unexpected cases
+                        column_name = f"Action_{i}"
+                    
+                    row_data[column_name] = f"{prob * 100:.2f}%"
+                
+                data.append(row_data)
+        
+        # Create and display DataFrame
+        if data:
+            df = pd.DataFrame(data)
+            # Sort by Information Set column
+            df = df.sort_values('Information Set')
+            print("\n=== AVERAGE STRATEGIES ===")
+            # Increase column spacing for better readability
+            print(df.to_string(index=False, col_space=15))
+        else:
+            print("\n=== AVERAGE STRATEGIES ===")
+            print("No strategies available.")
