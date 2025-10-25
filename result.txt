@@ -1,0 +1,52 @@
+
+Average game value: -0.054
+
+=== AVERAGE STRATEGIES ===
+
+Information Set: 3
+  Action 0: 0.233
+  Action 1: 0.767
+
+Information Set: 1p
+  Action 0: 0.669
+  Action 1: 0.331
+
+Information Set: 3pb
+  Action 0: 0.000
+  Action 1: 1.000
+
+Information Set: 1b
+  Action 0: 1.000
+  Action 1: 0.000
+
+Information Set: 1
+  Action 0: 0.742
+  Action 1: 0.258
+
+Information Set: 3p
+  Action 0: 0.000
+  Action 1: 1.000
+
+Information Set: 1pb
+  Action 0: 1.000
+  Action 1: 0.000
+
+Information Set: 3b
+  Action 0: 0.000
+  Action 1: 1.000
+
+Information Set: 2
+  Action 0: 1.000
+  Action 1: 0.000
+
+Information Set: 2pb
+  Action 0: 0.411
+  Action 1: 0.589
+
+Information Set: 2p
+  Action 0: 1.000
+  Action 1: 0.000
+
+Information Set: 2b
+  Action 0: 0.667
+  Action 1: 0.333
